@@ -196,7 +196,8 @@ jobs:
               ACACIA_LOG("acacia_log", Blocks.ACACIA_LOG),
               DARK_OAK_LOG("dark_oak_log", Blocks.DARK_OAK_LOG),
               MANGROVE_LOG("mangrove_log", Blocks.MANGROVE_LOG),
-              CHERRY_LOG("cherry_log", Blocks.CHERRY_BLOCK == null ? Blocks.OAK_LOG : Blocks.CHERRY_LOG);
+              CHERRY_LOG("cherry_log", Blocks.CHERRY_LOG);
+
 
               public final String id;
               public final Block vanilla;
