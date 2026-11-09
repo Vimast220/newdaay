@@ -1,0 +1,929 @@
+name: Build RealShrooms
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup directories
+        run: |
+          mkdir -p src/main/java/com/realshrooms/block
+          mkdir -p src/main/java/com/realshrooms/item
+          mkdir -p src/main/resources
+
+      - name: Gradle files
+        run: |
+          cat > build.gradle << '__EOF__'
+          plugins {
+              id 'fabric-loom' version '1.6-SNAPSHOT'
+              id 'maven-publish'
+          }
+          version = '3.0.0'
+          group = 'com.realshrooms'
+          base { archivesName = 'realshrooms' }
+          repositories {
+              maven { url = 'https://maven.fabricmc.net/' }
+              mavenCentral()
+          }
+          dependencies {
+              minecraft 'com.mojang:minecraft:1.20.1'
+              mappings loom.officialMojangMappings()
+              modImplementation 'net.fabricmc:fabric-loader:0.15.11'
+              modImplementation 'net.fabricmc.fabric-api:fabric-api:0.92.2+1.20.1'
+          }
+          processResources {
+              inputs.property 'version', project.version
+              filesMatching('fabric.mod.json') { expand 'version': project.version }
+          }
+          tasks.withType(JavaCompile).configureEach { it.options.release = 17 }
+          __EOF__
+          cat > settings.gradle << '__EOF__'
+          pluginManagement {
+              repositories {
+                  maven { url = 'https://maven.fabricmc.net/' }
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = 'realshrooms'
+          __EOF__
+          cat > gradle.properties << '__EOF__'
+          org.gradle.jvmargs=-Xmx2G
+          org.gradle.parallel=true
+          __EOF__
+
+      - name: fabric.mod.json
+        run: |
+          cat > src/main/resources/fabric.mod.json << '__EOF__'
+          {
+            "schemaVersion": 1,
+            "id": "realshrooms",
+            "version": "${version}",
+            "name": "RealShrooms",
+            "description": "Реалістичні гриби з міцелієм, колоніями та війнами видів",
+            "authors": ["Vimast220"],
+            "license": "MIT",
+            "environment": "*",
+            "entrypoints": {
+              "main": ["com.realshrooms.RealShrooms"],
+              "client": ["com.realshrooms.RealShroomsClient"]
+            },
+            "depends": {
+              "fabricloader": ">=0.15.0",
+              "fabric-api": "*",
+              "minecraft": "~1.20.1",
+              "java": ">=17"
+            }
+          }
+          __EOF__
+
+      - name: Core classes
+        run: |
+          cat > src/main/java/com/realshrooms/ShroomSpecies.java << '__EOF__'
+          package com.realshrooms;
+
+          import net.minecraft.world.effect.MobEffectInstance;
+          import net.minecraft.world.effect.MobEffects;
+
+          import java.util.function.Supplier;
+
+          public enum ShroomSpecies {
+              CHANTERELLE("chanterelle", "Лисичка", 0xE8A020, true, null, FeedingType.TREE, false, 0.8f, new String[]{"forest", "taiga"}),
+              PORCINI("porcini", "Білий гриб", 0xD8C8A0, true, null, FeedingType.TREE, false, 1.0f, new String[]{"forest", "taiga"}),
+              MOREL("morel", "Зморшок", 0x8B6F3C, false, null, FeedingType.PLANTS, false, 0.6f, new String[]{"forest", "birch_forest"}),
+              FLY_AGARIC("fly_agaric", "Мухомор", 0xC82020, false, () -> new MobEffectInstance(MobEffects.HUNGER, 200, 0), FeedingType.TREE, false, 1.0f, new String[]{"forest", "taiga"}),
+              DEATH_CAP("death_cap", "Бліда поганка", 0xE8E0C8, false, () -> new MobEffectInstance(MobEffects.POISON, 200, 1), FeedingType.TREE, false, 0.5f, new String[]{"forest", "swamp"}),
+              INKY_CAP("inky_cap", "Чорнильний гнойовик", 0x3C3C4A, true, null, FeedingType.PLANTS, false, 1.2f, new String[]{"swamp", "plains"}),
+              MYCENA("mycena", "Мицена хлорофос", 0xA8D8C8, false, null, FeedingType.PLANTS, false, 0.4f, new String[]{"jungle", "swamp"}),
+              HONEY_FUNGUS("honey_fungus", "Опеньок осінній", 0xC8A040, false, () -> new MobEffectInstance(MobEffects.POISON, 100, 0), FeedingType.PARASITE, true, 1.4f, new String[]{"forest", "dark_forest"});
+
+              public enum FeedingType { TREE, PLANTS, PARASITE }
+
+              public final String id;
+              public final String displayName;
+              public final int color;
+              public final boolean edible;
+              public final Supplier<MobEffectInstance> effect;
+              public final FeedingType feeding;
+              public final boolean isParasite;
+              public final float spreadSpeed;
+              public final String[] biomes;
+
+              ShroomSpecies(String id, String name, int color, boolean edible,
+                            Supplier<MobEffectInstance> effect, FeedingType feeding, boolean parasite,
+                            float spread, String[] biomes) {
+                  this.id = id; this.displayName = name; this.color = color;
+                  this.edible = edible; this.effect = effect; this.feeding = feeding;
+                  this.isParasite = parasite; this.spreadSpeed = spread; this.biomes = biomes;
+              }
+
+              public static ShroomSpecies byId(String id) {
+                  for (ShroomSpecies s : values()) if (s.id.equals(id)) return s;
+                  return CHANTERELLE;
+              }
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/ShroomConfig.java << '__EOF__'
+          package com.realshrooms;
+
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import net.fabricmc.loader.api.FabricLoader;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+
+          public final class ShroomConfig {
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+              public float spreadSpeed = 1.0f;
+              public float upkeepScale = 1.0f;
+              public float hyphaLifespan = 1.0f;
+              public int maxColonyBlocks = 300;
+              public boolean captureStone = true;
+              public boolean captureWood = true;
+              public boolean captureSand = true;
+              public boolean warsEnabled = true;
+              public boolean parasiteEnabled = true;
+              public boolean animalsEnabled = true;
+              public boolean debugEnabled = true;
+
+              public static ShroomConfig INSTANCE = new ShroomConfig();
+
+              public static void load() {
+                  Path p = FabricLoader.getInstance().getConfigDir().resolve("realshrooms.json");
+                  try {
+                      if (Files.exists(p)) {
+                          ShroomConfig loaded = GSON.fromJson(Files.readString(p), ShroomConfig.class);
+                          if (loaded != null) INSTANCE = loaded;
+                      } else {
+                          Files.writeString(p, GSON.toJson(INSTANCE));
+                      }
+                  } catch (Exception e) {
+                      RealShrooms.LOGGER.error("Failed to read config/realshrooms.json", e);
+                  }
+              }
+
+              public ShroomConfig() {}
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/Host.java << '__EOF__'
+          package com.realshrooms;
+
+          import net.minecraft.util.StringRepresentable;
+          import net.minecraft.world.level.block.Block;
+          import net.minecraft.world.level.block.Blocks;
+
+          public enum Host implements StringRepresentable {
+              DIRT("dirt", Blocks.DIRT),
+              GRASS("grass", Blocks.GRASS_BLOCK),
+              PODZOL("podzol", Blocks.PODZOL),
+              STONE("stone", Blocks.STONE),
+              DEEPSLATE("deepslate", Blocks.DEEPSLATE),
+              SAND("sand", Blocks.SAND),
+              GRAVEL("gravel", Blocks.GRAVEL),
+              OAK_LOG("oak_log", Blocks.OAK_LOG),
+              BIRCH_LOG("birch_log", Blocks.BIRCH_LOG),
+              SPRUCE_LOG("spruce_log", Blocks.SPRUCE_LOG),
+              JUNGLE_LOG("jungle_log", Blocks.JUNGLE_LOG),
+              ACACIA_LOG("acacia_log", Blocks.ACACIA_LOG),
+              DARK_OAK_LOG("dark_oak_log", Blocks.DARK_OAK_LOG),
+              MANGROVE_LOG("mangrove_log", Blocks.MANGROVE_LOG),
+              CHERRY_LOG("cherry_log", Blocks.CHERRY_BLOCK == null ? Blocks.OAK_LOG : Blocks.CHERRY_LOG);
+
+              public final String id;
+              public final Block vanilla;
+
+              Host(String id, Block vanilla) { this.id = id; this.vanilla = vanilla; }
+
+              @Override public String getSerializedName() { return id; }
+
+              public static Host fromVanilla(Block b) {
+                  for (Host h : values()) if (h.vanilla == b) return h;
+                  return null;
+              }
+
+              public boolean isWood() { return id.endsWith("_log"); }
+          }
+          __EOF__
+
+      - name: Colony logic
+        run: |
+          cat > src/main/java/com/realshrooms/ColonyData.java << '__EOF__'
+          package com.realshrooms;
+
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.nbt.CompoundTag;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.util.RandomSource;
+
+          import java.util.*;
+
+          public final class ColonyData {
+              public static final int MAX_TOTAL_LEVELS = 6;
+              public static final int MAX_FOOD = 60;
+              public static final int START_FOOD = 30;
+              public static final int MAX_POINTS = 200;
+
+              public static final class Colony {
+                  public ShroomSpecies species;
+                  public int points;
+                  public int expansion, fruiting, resistance, aggression;
+                  public int strategy = 0;
+                  public int totalLevels() { return expansion + fruiting + resistance + aggression; }
+              }
+
+              private static final Map<String, Colony> colonies = new HashMap<>();
+              private static final Map<String, Integer> food = new HashMap<>();
+
+              private static String key(ServerLevel l, BlockPos p, ShroomSpecies sp) {
+                  return l.dimension().location() + "|" + Math.floorDiv(p.getX(), 32) + "|"
+                      + Math.floorDiv(p.getZ(), 32) + "|" + sp.id;
+              }
+              private static String foodKey(ServerLevel l, BlockPos p) {
+                  return l.dimension().location() + "|" + Math.floorDiv(p.getX(), 32) + "|" + Math.floorDiv(p.getZ(), 32);
+              }
+
+              public static Colony colonyFor(ServerLevel l, BlockPos p, ShroomSpecies sp) {
+                  return colonies.computeIfAbsent(key(l, p, sp), k -> { Colony c = new Colony(); c.species = sp; return c; });
+              }
+
+              public static Colony merged(ServerLevel l, BlockPos p, ShroomSpecies sp) {
+                  Colony t = new Colony(); t.species = sp;
+                  int rx = Math.floorDiv(p.getX(), 32), rz = Math.floorDiv(p.getZ(), 32);
+                  for (int dx = -1; dx <= 1; dx++)
+                      for (int dz = -1; dz <= 1; dz++) {
+                          Colony c = colonies.get(l.dimension().location() + "|" + (rx + dx) + "|" + (rz + dz) + "|" + sp.id);
+                          if (c == null) continue;
+                          t.points += c.points;
+                          t.expansion = Math.max(t.expansion, c.expansion);
+                          t.fruiting = Math.max(t.fruiting, c.fruiting);
+                          t.resistance = Math.max(t.resistance, c.resistance);
+                          t.aggression = Math.max(t.aggression, c.aggression);
+                          t.strategy = Math.max(t.strategy, c.strategy);
+                      }
+                  return t;
+              }
+
+              public static boolean spend(ServerLevel l, BlockPos p, ShroomSpecies sp, int amount) {
+                  int rx = Math.floorDiv(p.getX(), 32), rz = Math.floorDiv(p.getZ(), 32);
+                  List<Colony> list = new ArrayList<>();
+                  for (int dx = -1; dx <= 1; dx++)
+                      for (int dz = -1; dz <= 1; dz++) {
+                          Colony c = colonies.get(l.dimension().location() + "|" + (rx + dx) + "|" + (rz + dz) + "|" + sp.id);
+                          if (c != null && c.points > 0) list.add(c);
+                      }
+                  int have = list.stream().mapToInt(c -> c.points).sum();
+                  if (have < amount) return false;
+                  list.sort((a, b) -> Integer.compare(b.points, a.points));
+                  for (Colony c : list) {
+                      int take = Math.min(amount, c.points);
+                      c.points -= take; amount -= take;
+                      if (amount == 0) break;
+                  }
+                  return true;
+              }
+
+              public static void addPoints(ServerLevel l, BlockPos p, ShroomSpecies sp, int n) {
+                  Colony c = colonyFor(l, p, sp);
+                  c.points = Math.max(0, Math.min(MAX_POINTS, c.points + n));
+              }
+
+              public static boolean tryUpgrade(ServerLevel l, BlockPos p, ShroomSpecies sp) {
+                  Colony c = merged(l, p, sp);
+                  if (c.totalLevels() >= MAX_TOTAL_LEVELS) return false;
+                  int[] order = c.strategy == 2 ? new int[]{3,2,1,0} : c.strategy == 1 ? new int[]{2,3,0,1}
+                      : c.strategy == 3 ? new int[]{0,1,2,3} : new int[]{0,1,3,2};
+                  for (int idx : order) {
+                      int cur = idx == 0 ? c.expansion : idx == 1 ? c.fruiting : idx == 2 ? c.resistance : c.aggression;
+                      if (cur >= 3) continue;
+                      int price = cur == 0 ? 12 : cur == 1 ? 25 : 45;
+                      if (!spend(l, p, sp, price)) continue;
+                      Colony t = colonyFor(l, p, sp);
+                      if (idx == 0) t.expansion++; else if (idx == 1) t.fruiting++;
+                      else if (idx == 2) t.resistance++; else t.aggression++;
+                      return true;
+                  }
+                  return false;
+              }
+
+              public static int foodAt(ServerLevel l, BlockPos p) {
+                  return food.getOrDefault(foodKey(l, p), START_FOOD);
+              }
+
+              public static void consumeFood(ServerLevel l, BlockPos p, int n) {
+                  food.merge(foodKey(l, p), -Math.max(0, n), Integer::sum);
+              }
+
+              public static void regenFood(ServerLevel l) {
+                  RandomSource r = l.getRandom();
+                  for (String k : new HashSet<>(food.keySet())) {
+                      int v = food.getOrDefault(k, START_FOOD) + r.nextInt(3);
+                      food.put(k, Math.min(MAX_FOOD, v));
+                  }
+              }
+
+              public static void save(CompoundTag tag) {
+                  CompoundTag c = new CompoundTag();
+                  for (var e : colonies.entrySet()) {
+                      var t = new CompoundTag();
+                      t.putInt("p", e.getValue().points);
+                      t.putInt("e", e.getValue().expansion);
+                      t.putInt("f", e.getValue().fruiting);
+                      t.putInt("r", e.getValue().resistance);
+                      t.putInt("a", e.getValue().aggression);
+                      t.putInt("s", e.getValue().strategy);
+                      c.put(e.getKey(), t);
+                  }
+                  tag.put("colonies", c);
+              }
+
+              public static void load(CompoundTag tag) {
+                  colonies.clear(); food.clear();
+                  CompoundTag c = tag.getCompound("colonies");
+                  for (String k : c.getAllKeys()) {
+                      var t = c.getCompound(k);
+                      Colony col = new Colony();
+                      col.species = ShroomSpecies.byId(k.substring(k.lastIndexOf('|') + 1));
+                      col.points = t.getInt("p");
+                      col.expansion = t.getInt("e");
+                      col.fruiting = t.getInt("f");
+                      col.resistance = t.getInt("r");
+                      col.aggression = t.getInt("a");
+                      col.strategy = t.getInt("s");
+                      colonies.put(k, col);
+                  }
+              }
+
+              private ColonyData() {}
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/ColonyTicker.java << '__EOF__'
+          package com.realshrooms;
+
+          import net.minecraft.server.level.ServerLevel;
+
+          public final class ColonyTicker {
+              public static void tick(ServerLevel level) {
+                  if (level.getGameTime() % 40 == 0) ColonyData.regenFood(level);
+              }
+              private ColonyTicker() {}
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/GrazingHandler.java << '__EOF__'
+          package com.realshrooms;
+
+          import com.realshrooms.block.ShroomBlock;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.world.entity.animal.Animal;
+          import net.minecraft.world.entity.player.Player;
+
+          public final class GrazingHandler {
+              public static void tick(ServerLevel level) {
+                  if (!ShroomConfig.INSTANCE.animalsEnabled) return;
+                  if (level.getGameTime() % 100 != 0) return;
+                  for (Player p : level.players()) {
+                      var animals = level.getEntitiesOfClass(Animal.class,
+                          p.getBoundingBox().inflate(24), a -> a.isAlive() && a.getHealth() < a.getMaxHealth());
+                      for (Animal a : animals) {
+                          var pos = a.blockPosition();
+                          search:
+                          for (int dx = -5; dx <= 5; dx++)
+                              for (int dy = -1; dy <= 1; dy++)
+                                  for (int dz = -5; dz <= 5; dz++) {
+                                      var bp = pos.offset(dx, dy, dz);
+                                      var bs = level.getBlockState(bp);
+                                      if (bs.getBlock() instanceof ShroomBlock sb) {
+                                          if (sb.species.edible) { a.heal(2); level.removeBlock(bp, false); break search; }
+                                          else if (sb.species.effect != null) { a.addEffect(sb.species.effect.get()); level.removeBlock(bp, false); break search; }
+                                      }
+                                  }
+                      }
+                  }
+              }
+              private GrazingHandler() {}
+          }
+          __EOF__
+
+      - name: Main entry
+        run: |
+          cat > src/main/java/com/realshrooms/RealShrooms.java << '__EOF__'
+          package com.realshrooms;
+
+          import com.realshrooms.block.*;
+          import com.realshrooms.item.MushroomItem;
+          import net.fabricmc.api.ModInitializer;
+          import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+          import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+          import net.minecraft.core.Registry;
+          import net.minecraft.core.registries.BuiltInRegistries;
+          import net.minecraft.resources.ResourceLocation;
+          import net.minecraft.world.item.BlockItem;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.level.block.Block;
+          import net.minecraft.world.level.block.SoundType;
+          import net.minecraft.world.level.block.state.BlockBehaviour;
+          import net.minecraft.world.level.material.MapColor;
+          import org.slf4j.Logger;
+          import org.slf4j.LoggerFactory;
+
+          import java.util.HashMap;
+          import java.util.Map;
+
+          public class RealShrooms implements ModInitializer {
+              public static final String MOD_ID = "realshrooms";
+              public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+              public static final Map<ShroomSpecies, Block> SHROOM_BLOCKS = new HashMap<>();
+              public static final Map<ShroomSpecies, Block> HYPHA_BLOCKS = new HashMap<>();
+              public static final Map<ShroomSpecies, Block> NODE_BLOCKS = new HashMap<>();
+              public static final Map<ShroomSpecies, Block> CORE_BLOCKS = new HashMap<>();
+              public static final Map<ShroomSpecies, Item> SHROOM_ITEMS = new HashMap<>();
+
+              @Override public void onInitialize() {
+                  ShroomConfig.load();
+                  for (ShroomSpecies sp : ShroomSpecies.values()) registerAll(sp);
+                  CommandRegistrationCallback.EVENT.register((d, r, e) -> DebugCommand.register(d));
+                  ServerTickEvents.END_WORLD_TICK.register(ColonyTicker::tick);
+                  ServerTickEvents.END_WORLD_TICK.register(GrazingHandler::tick);
+                  LOGGER.info("RealShrooms 3.0.0 loaded with {} species", ShroomSpecies.values().length);
+              }
+
+              private static void registerAll(ShroomSpecies sp) {
+                  Block shroom = new ShroomBlock(sp, BlockBehaviour.Properties.of()
+                      .mapColor(MapColor.PLANT).noCollission().instabreak()
+                      .sound(SoundType.GRASS).randomTicks());
+                  Registry.register(BuiltInRegistries.BLOCK, id(sp.id + "_shroom"), shroom);
+                  SHROOM_BLOCKS.put(sp, shroom);
+
+                  Block hypha = new MyceliumHyphaBlock(sp, BlockBehaviour.Properties.of()
+                      .mapColor(MapColor.DIRT).strength(0.5f).randomTicks());
+                  Registry.register(BuiltInRegistries.BLOCK, id(sp.id + "_hypha"), hypha);
+                  HYPHA_BLOCKS.put(sp, hypha);
+
+                  Block node = new MyceliumNodeBlock(sp, BlockBehaviour.Properties.of()
+                      .mapColor(MapColor.DIRT).strength(1.0f).randomTicks());
+                  Registry.register(BuiltInRegistries.BLOCK, id(sp.id + "_node"), node);
+                  NODE_BLOCKS.put(sp, node);
+
+                  Block core = new MyceliumCoreBlock(sp, BlockBehaviour.Properties.of()
+                      .mapColor(MapColor.DIRT).strength(2.0f).randomTicks());
+                  Registry.register(BuiltInRegistries.BLOCK, id(sp.id + "_core"), core);
+                  CORE_BLOCKS.put(sp, core);
+
+                  Item shroomItem = new MushroomItem(sp, shroom, new Item.Properties());
+                  Registry.register(BuiltInRegistries.ITEM, id(sp.id + "_shroom"), shroomItem);
+                  SHROOM_ITEMS.put(sp, shroomItem);
+
+                  Registry.register(BuiltInRegistries.ITEM, id(sp.id + "_hypha"), new BlockItem(hypha, new Item.Properties()));
+                  Registry.register(BuiltInRegistries.ITEM, id(sp.id + "_node"), new BlockItem(node, new Item.Properties()));
+                  Registry.register(BuiltInRegistries.ITEM, id(sp.id + "_core"), new BlockItem(core, new Item.Properties()));
+              }
+
+              private static ResourceLocation id(String p) { return new ResourceLocation(MOD_ID, p); }
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/RealShroomsClient.java << '__EOF__'
+          package com.realshrooms;
+
+          import net.fabricmc.api.ClientModInitializer;
+
+          public class RealShroomsClient implements ClientModInitializer {
+              @Override public void onInitializeClient() {}
+          }
+          __EOF__
+
+      - name: Debug command
+        run: |
+          cat > src/main/java/com/realshrooms/DebugCommand.java << '__EOF__'
+          package com.realshrooms;
+
+          import com.mojang.brigadier.CommandDispatcher;
+          import com.mojang.brigadier.arguments.IntegerArgumentType;
+          import com.realshrooms.block.*;
+          import net.minecraft.commands.CommandSourceStack;
+          import net.minecraft.commands.Commands;
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.core.Direction;
+          import net.minecraft.core.particles.ParticleTypes;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.server.level.ServerPlayer;
+          import net.minecraft.world.level.block.Block;
+
+          import java.util.ArrayDeque;
+          import java.util.HashSet;
+          import java.util.Set;
+
+          public final class DebugCommand {
+              public static void register(CommandDispatcher<CommandSourceStack> d) {
+                  d.register(Commands.literal("realshrooms")
+                      .requires(src -> src.hasPermission(2))
+                      .then(Commands.literal("info").executes(ctx -> info(ctx.getSource())))
+                      .then(Commands.literal("size").executes(ctx -> size(ctx.getSource())))
+                      .then(Commands.literal("points")
+                          .then(Commands.argument("amount", IntegerArgumentType.integer(-1000, 1000))
+                              .executes(ctx -> addPoints(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "amount")))))
+                      .then(Commands.literal("kill").executes(ctx -> kill(ctx.getSource())))
+                      .then(Commands.literal("highlight").executes(ctx -> highlight(ctx.getSource()))));
+              }
+
+              private static BlockPos lookingAt(ServerPlayer p) {
+                  var hit = p.pick(16.0D, 0.5F, false);
+                  return hit == null ? p.blockPosition() : hit.getBlockPos();
+              }
+
+              private static ShroomSpecies speciesAt(ServerLevel lvl, BlockPos pos) {
+                  Block b = lvl.getBlockState(pos).getBlock();
+                  if (b instanceof MyceliumHyphaBlock hy) return hy.species();
+                  if (b instanceof MyceliumCoreBlock co) return co.species;
+                  if (b instanceof MyceliumNodeBlock no) return no.species;
+                  if (b instanceof ShroomBlock sb) return sb.species;
+                  return ShroomSpecies.CHANTERELLE;
+              }
+
+              private static boolean isMycelium(ServerLevel lvl, BlockPos pos) {
+                  Block b = lvl.getBlockState(pos).getBlock();
+                  return b instanceof MyceliumHyphaBlock || b instanceof MyceliumCoreBlock || b instanceof MyceliumNodeBlock;
+              }
+
+              private static int info(CommandSourceStack src) {
+                  if (!(src.getEntity() instanceof ServerPlayer p)) return 0;
+                  ServerLevel lvl = (ServerLevel) p.level();
+                  BlockPos pos = lookingAt(p);
+                  ShroomSpecies sp = speciesAt(lvl, pos);
+                  var c = ColonyData.merged(lvl, pos, sp);
+                  int sz = count(lvl, pos, sp);
+                  String strat = switch (c.strategy) { case 1 -> "Оборона"; case 2 -> "Війна"; case 3 -> "Голод"; default -> "Розширення"; };
+                  src.sendSuccess(() -> Component.literal(
+                      "Колонія [" + sp.displayName + "] точки: " + c.points
+                      + " | розмір: " + sz
+                      + " | E/F/R/A: " + c.expansion + "/" + c.fruiting + "/" + c.resistance + "/" + c.aggression
+                      + " (" + c.totalLevels() + "/" + ColonyData.MAX_TOTAL_LEVELS + ")"
+                      + " | стратегія: " + strat), false);
+                  return 1;
+              }
+
+              private static int size(CommandSourceStack src) {
+                  if (!(src.getEntity() instanceof ServerPlayer p)) return 0;
+                  ServerLevel lvl = (ServerLevel) p.level();
+                  BlockPos pos = lookingAt(p);
+                  ShroomSpecies sp = speciesAt(lvl, pos);
+                  int n = count(lvl, pos, sp);
+                  src.sendSuccess(() -> Component.literal("Розмір: " + n + " блоків " + sp.displayName), false);
+                  return 1;
+              }
+
+              private static int count(ServerLevel lvl, BlockPos start, ShroomSpecies sp) {
+                  Set<BlockPos> seen = new HashSet<>();
+                  ArrayDeque<BlockPos> q = new ArrayDeque<>();
+                  q.add(start);
+                  while (!q.isEmpty() && seen.size() < 4000) {
+                      BlockPos p = q.poll();
+                      if (!seen.add(p)) continue;
+                      if (p.distManhattan(start) > 128) continue;
+                      if (!isMycelium(lvl, p)) continue;
+                      if (!speciesAt(lvl, p).equals(sp)) continue;
+                      for (Direction d : Direction.values()) q.add(p.relative(d));
+                  }
+                  return seen.size();
+              }
+
+              private static int addPoints(CommandSourceStack src, int amount) {
+                  if (!(src.getEntity() instanceof ServerPlayer p)) return 0;
+                  ServerLevel lvl = (ServerLevel) p.level();
+                  BlockPos pos = lookingAt(p);
+                  ShroomSpecies sp = speciesAt(lvl, pos);
+                  ColonyData.addPoints(lvl, pos, sp, amount);
+                  src.sendSuccess(() -> Component.literal("Очки " + sp.displayName + " += " + amount), false);
+                  return 1;
+              }
+
+              private static int kill(CommandSourceStack src) {
+                  if (!(src.getEntity() instanceof ServerPlayer p)) return 0;
+                  ServerLevel lvl = (ServerLevel) p.level();
+                  BlockPos pos = lookingAt(p);
+                  ShroomSpecies sp = speciesAt(lvl, pos);
+                  Set<BlockPos> seen = new HashSet<>();
+                  ArrayDeque<BlockPos> q = new ArrayDeque<>();
+                  q.add(pos);
+                  int killed = 0;
+                  while (!q.isEmpty() && killed < 4000) {
+                      BlockPos b = q.poll();
+                      if (!seen.add(b)) continue;
+                      if (b.distManhattan(pos) > 128) continue;
+                      if (!isMycelium(lvl, b)) continue;
+                      if (!speciesAt(lvl, b).equals(sp)) continue;
+                      lvl.removeBlock(b, false);
+                      killed++;
+                      for (Direction d : Direction.values()) q.add(b.relative(d));
+                  }
+                  final int k = killed;
+                  src.sendSuccess(() -> Component.literal("Вбито " + k + " блоків " + sp.displayName), false);
+                  return 1;
+              }
+
+              private static int highlight(CommandSourceStack src) {
+                  if (!(src.getEntity() instanceof ServerPlayer p)) return 0;
+                  ServerLevel lvl = (ServerLevel) p.level();
+                  BlockPos pos = lookingAt(p);
+                  ShroomSpecies sp = speciesAt(lvl, pos);
+                  Set<BlockPos> seen = new HashSet<>();
+                  ArrayDeque<BlockPos> q = new ArrayDeque<>();
+                  q.add(pos);
+                  while (!q.isEmpty() && seen.size() < 2000) {
+                      BlockPos b = q.poll();
+                      if (!seen.add(b)) continue;
+                      if (b.distManhattan(pos) > 96) continue;
+                      if (!isMycelium(lvl, b)) continue;
+                      if (!speciesAt(lvl, b).equals(sp)) continue;
+                      lvl.sendParticles(ParticleTypes.END_ROD, b.getX() + 0.5, b.getY() + 1.05, b.getZ() + 0.5, 1, 0, 0, 0, 0);
+                      for (Direction d : Direction.values()) q.add(b.relative(d));
+                  }
+                  final int n = seen.size();
+                  src.sendSuccess(() -> Component.literal("Підсвічено " + n + " блоків"), false);
+                  return 1;
+              }
+
+              private DebugCommand() {}
+          }
+          __EOF__
+
+      - name: Blocks
+        run: |
+          cat > src/main/java/com/realshrooms/block/ShroomBlock.java << '__EOF__'
+          package com.realshrooms.block;
+
+          import com.realshrooms.RealShrooms;
+          import com.realshrooms.ShroomSpecies;
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.util.RandomSource;
+          import net.minecraft.world.InteractionHand;
+          import net.minecraft.world.InteractionResult;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.level.Level;
+          import net.minecraft.world.level.block.Block;
+          import net.minecraft.world.level.block.state.BlockState;
+          import net.minecraft.world.level.block.state.StateDefinition;
+          import net.minecraft.world.level.block.state.properties.IntegerProperty;
+          import net.minecraft.world.phys.BlockHitResult;
+
+          public class ShroomBlock extends Block {
+              public static final IntegerProperty AGE = IntegerProperty.create("age", 0, 2);
+              public final ShroomSpecies species;
+
+              public ShroomBlock(ShroomSpecies sp, Properties props) {
+                  super(props);
+                  this.species = sp;
+                  registerDefaultState(stateDefinition.any().setValue(AGE, 2));
+              }
+
+              @Override protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> b) { b.add(AGE); }
+
+              @Override public void randomTick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
+                  int age = state.getValue(AGE);
+                  if (age < 2 && random.nextInt(8) == 0) level.setBlock(pos, state.setValue(AGE, age + 1), 3);
+              }
+
+              @Override public InteractionResult use(BlockState state, Level level, BlockPos pos, Player player,
+                                                     InteractionHand hand, BlockHitResult hit) {
+                  if (state.getValue(AGE) < 2) return InteractionResult.PASS;
+                  if (level.isClientSide) return InteractionResult.SUCCESS;
+                  int n = 1 + level.getRandom().nextInt(2);
+                  ItemStack drop = new ItemStack(RealShrooms.SHROOM_ITEMS.get(species), n);
+                  Block.popResource(level, pos, drop);
+                  level.setBlock(pos, state.setValue(AGE, 0), 3);
+                  return InteractionResult.SUCCESS;
+              }
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/block/MyceliumCoreBlock.java << '__EOF__'
+          package com.realshrooms.block;
+
+          import com.realshrooms.*;
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.core.Direction;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.util.RandomSource;
+          import net.minecraft.world.level.block.Block;
+          import net.minecraft.world.level.block.Blocks;
+          import net.minecraft.world.level.block.state.BlockState;
+
+          public class MyceliumCoreBlock extends Block {
+              public final ShroomSpecies species;
+              public MyceliumCoreBlock(ShroomSpecies sp, Properties p) { super(p); this.species = sp; }
+
+              @Override public void randomTick(BlockState st, ServerLevel lvl, BlockPos pos, RandomSource r) {
+                  if (r.nextInt(15) == 0) ColonyData.tryUpgrade(lvl, pos, species);
+                  if (r.nextInt(20) == 0) {
+                      Direction dir = Direction.Plane.HORIZONTAL.getRandomDirection(r);
+                      BlockPos t = pos.relative(dir);
+                      Host h = Host.fromVanilla(lvl.getBlockState(t).getBlock());
+                      if (h != null && ColonyData.spend(lvl, pos, species, 1)) {
+                          BlockState hy = RealShrooms.HYPHA_BLOCKS.get(species).defaultBlockState()
+                              .setValue(MyceliumHyphaBlock.HOST, h)
+                              .setValue(MyceliumHyphaBlock.VIGOR, 4);
+                          lvl.setBlock(t, hy, 3);
+                      }
+                  }
+                  if (r.nextInt(200) == 0) {
+                      BlockPos above = pos.above();
+                      if (lvl.getBlockState(above).isAir() && ColonyData.foodAt(lvl, pos) > 10) {
+                          lvl.setBlock(above, RealShrooms.SHROOM_BLOCKS.get(species).defaultBlockState(), 3);
+                          ColonyData.consumeFood(lvl, pos, 5);
+                      }
+                  }
+              }
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/block/MyceliumNodeBlock.java << '__EOF__'
+          package com.realshrooms.block;
+
+          import com.realshrooms.*;
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.util.RandomSource;
+          import net.minecraft.world.level.block.Block;
+          import net.minecraft.world.level.block.state.BlockState;
+
+          public class MyceliumNodeBlock extends Block {
+              public final ShroomSpecies species;
+              public MyceliumNodeBlock(ShroomSpecies sp, Properties p) { super(p); this.species = sp; }
+
+              @Override public void randomTick(BlockState s, ServerLevel lvl, BlockPos pos, RandomSource r) {
+                  if (r.nextInt(300) == 0 && ColonyData.foodAt(lvl, pos) > 20) {
+                      BlockPos above = pos.above();
+                      if (lvl.getBlockState(above).isAir()) {
+                          lvl.setBlock(above, RealShrooms.SHROOM_BLOCKS.get(species).defaultBlockState(), 3);
+                          ColonyData.consumeFood(lvl, pos, 5);
+                      }
+                  }
+              }
+          }
+          __EOF__
+          cat > src/main/java/com/realshrooms/block/MyceliumHyphaBlock.java << '__EOF__'
+          package com.realshrooms.block;
+
+          import com.realshrooms.*;
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.core.Direction;
+          import net.minecraft.server.level.ServerLevel;
+          import net.minecraft.util.RandomSource;
+          import net.minecraft.world.level.block.Block;
+          import net.minecraft.world.level.block.Blocks;
+          import net.minecraft.world.level.block.state.BlockState;
+          import net.minecraft.world.level.block.state.StateDefinition;
+          import net.minecraft.world.level.block.state.properties.EnumProperty;
+          import net.minecraft.world.level.block.state.properties.IntegerProperty;
+
+          public class MyceliumHyphaBlock extends Block {
+              public static final EnumProperty<Host> HOST = EnumProperty.create("host", Host.class);
+              public static final IntegerProperty VIGOR = IntegerProperty.create("vigor", 0, 7);
+
+              private final ShroomSpecies species;
+              public MyceliumHyphaBlock(ShroomSpecies sp, Properties p) {
+                  super(p);
+                  this.species = sp;
+                  registerDefaultState(stateDefinition.any().setValue(HOST, Host.DIRT).setValue(VIGOR, 3));
+              }
+
+              public ShroomSpecies species() { return species; }
+
+              @Override protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> b) { b.add(HOST, VIGOR); }
+
+              @Override public void randomTick(BlockState state, ServerLevel lvl, BlockPos pos, RandomSource rng) {
+                  ShroomConfig cfg = ShroomConfig.INSTANCE;
+                  int vigor = state.getValue(VIGOR);
+                  if (rng.nextInt(100) < (8 - vigor) * 4) {
+                      if (vigor <= 0) { lvl.removeBlock(pos, false); return; }
+                      lvl.setBlock(pos, state.setValue(VIGOR, vigor - 1), 3);
+                  }
+                  if (vigor >= 2 && rng.nextFloat() < cfg.spreadSpeed * species.spreadSpeed) {
+                      BlockPos target = bestTarget(lvl, pos, rng);
+                      if (target != null) spreadTo(lvl, target, vigor - 1);
+                  }
+              }
+
+              private BlockPos bestTarget(ServerLevel lvl, BlockPos pos, RandomSource rng) {
+                  BlockPos best = null; double bestScore = -1;
+                  for (Direction d : Direction.values()) {
+                      BlockPos n = pos.relative(d);
+                      BlockState s = lvl.getBlockState(n);
+                      double score = 0;
+                      if (s.is(Blocks.WATER)) score += 3;
+                      else if (s.is(Blocks.GRASS_BLOCK) || s.is(Blocks.PODZOL) || s.is(Blocks.DIRT)) score += 2;
+                      else if ((s.is(Blocks.STONE) || s.is(Blocks.DEEPSLATE)) && ShroomConfig.INSTANCE.captureStone) score += 1;
+                      else if ((s.is(Blocks.SAND) || s.is(Blocks.GRAVEL)) && ShroomConfig.INSTANCE.captureSand) score += 1;
+                      else if (s.is(net.minecraft.tags.BlockTags.LOGS) && ShroomConfig.INSTANCE.captureWood) score += 2;
+                      else if (s.getBlock() instanceof MyceliumHyphaBlock hy && hy.species() != species
+                          && ShroomConfig.INSTANCE.warsEnabled) score += 4;
+                      else if (s.isAir()) score += 0.05;
+                      else score -= 3;
+                      score += rng.nextDouble() * 0.3;
+                      if (score > bestScore) { bestScore = score; best = n; }
+                  }
+                  return best;
+              }
+
+              private void spreadTo(ServerLevel lvl, BlockPos pos, int newVigor) {
+                  BlockState existing = lvl.getBlockState(pos);
+                  if (existing.getBlock() instanceof MyceliumHyphaBlock hy) {
+                      if (hy.species() != species && ShroomConfig.INSTANCE.warsEnabled) { war(lvl, pos, existing); return; }
+                      return;
+                  }
+                  Host h = Host.fromVanilla(existing.getBlock());
+                  if (h == null) return;
+                  if (existing.is(net.minecraft.tags.BlockTags.LOGS) && !ShroomConfig.INSTANCE.captureWood) return;
+                  if ((existing.is(Blocks.STONE) || existing.is(Blocks.DEEPSLATE)) && !ShroomConfig.INSTANCE.captureStone) return;
+                  if ((existing.is(Blocks.SAND) || existing.is(Blocks.GRAVEL)) && !ShroomConfig.INSTANCE.captureSand) return;
+                  if (!ColonyData.spend(lvl, pos, species, 1)) return;
+                  BlockState replaced = RealShrooms.HYPHA_BLOCKS.get(species).defaultBlockState()
+                      .setValue(HOST, h).setValue(VIGOR, Math.max(0, Math.min(7, newVigor)));
+                  lvl.setBlock(pos, replaced, 3);
+              }
+
+              private void war(ServerLevel lvl, BlockPos pos, BlockState existing) {
+                  MyceliumHyphaBlock enemy = (MyceliumHyphaBlock) existing.getBlock();
+                  var mine = ColonyData.merged(lvl, pos, species);
+                  var theirs = ColonyData.merged(lvl, pos, enemy.species());
+                  int myPower = existing.getValue(VIGOR) + mine.aggression * 2 + lvl.getRandom().nextInt(3);
+                  int theirPower = existing.getValue(VIGOR) + theirs.resistance * 2 + lvl.getRandom().nextInt(3);
+                  if (myPower > theirPower) {
+                      if (ColonyData.spend(lvl, pos, species, 1)) {
+                          lvl.setBlock(pos, RealShrooms.HYPHA_BLOCKS.get(species).defaultBlockState()
+                              .setValue(HOST, existing.getValue(HOST))
+                              .setValue(VIGOR, Math.max(0, existing.getValue(VIGOR) - 1)), 3);
+                          ColonyData.addPoints(lvl, pos, species, 1);
+                      }
+                  } else {
+                      if (ColonyData.spend(lvl, pos, enemy.species(), 1)) {
+                          lvl.setBlock(pos, existing.setValue(VIGOR, Math.min(7, existing.getValue(VIGOR) + 1)), 3);
+                      }
+                  }
+              }
+          }
+          __EOF__
+
+      - name: MushroomItem
+        run: |
+          cat > src/main/java/com/realshrooms/item/MushroomItem.java << '__EOF__'
+          package com.realshrooms.item;
+
+          import com.realshrooms.ShroomSpecies;
+          import net.minecraft.world.InteractionHand;
+          import net.minecraft.world.InteractionResultHolder;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.food.FoodProperties;
+          import net.minecraft.world.item.BlockItem;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.level.Level;
+          import net.minecraft.world.level.block.Block;
+
+          public class MushroomItem extends BlockItem {
+              private final ShroomSpecies species;
+              public MushroomItem(ShroomSpecies sp, Block block, Properties props) {
+                  super(block, sp.edible
+                      ? props.food(new FoodProperties.Builder().nutrition(3).saturationMod(0.4f).alwaysEat().build())
+                      : props);
+                  this.species = sp;
+              }
+
+              @Override public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+                  if (species.edible) {
+                      player.startUsingItem(hand);
+                      return InteractionResultHolder.consume(player.getItemInHand(hand));
+                  }
+                  return super.use(level, player, hand);
+              }
+
+              @Override public ItemStack finishUsingItem(ItemStack stack, Level level, LivingEntity entity) {
+                  ItemStack result = super.finishUsingItem(stack, level, entity);
+                  if (species.effect != null && !level.isClientSide) entity.addEffect(species.effect.get());
+                  return result;
+              }
+          }
+          __EOF__
+
+      - name: Install Gradle
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip -q gradle-8.5-bin.zip
+          echo "$GITHUB_WORKSPACE/gradle-8.5/bin" >> $GITHUB_PATH
+
+      - name: Build
+        run: gradle build --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: realshrooms-jar
+          path: build/libs/*.jar
