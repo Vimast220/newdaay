@@ -538,7 +538,7 @@ jobs:
 
               private static BlockPos lookingAt(ServerPlayer p) {
                   var hit = p.pick(16.0D, 0.5F, false);
-                  return hit == null ? p.blockPosition() : hit.getBlockPos();
+                  return hit instanceof net.minecraft.world.phys.BlockHitResult bhr ? bhr.getBlockPos() : p.blockPosition();
               }
 
               private static ShroomSpecies speciesAt(ServerLevel lvl, BlockPos pos) {
