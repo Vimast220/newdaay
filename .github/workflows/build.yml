@@ -37,6 +37,12 @@ jobs:
               "honey_fungus": (200, 160, 64),
           }
 
+          UK_NAMES = {
+              "chanterelle": "Лисичка", "porcini": "Білий гриб", "morel": "Зморшок",
+              "fly_agaric": "Мухомор", "death_cap": "Бліда поганка", "inky_cap": "Чорнильний гнойовик",
+              "mycena": "Мицена хлорофос", "honey_fungus": "Опеньок осінній"
+          }
+
           os.makedirs("src/main/resources/assets/realshrooms/textures/block", exist_ok=True)
           os.makedirs("src/main/resources/assets/realshrooms/textures/item", exist_ok=True)
           os.makedirs("src/main/resources/assets/realshrooms/models/block", exist_ok=True)
@@ -47,9 +53,10 @@ jobs:
           os.makedirs("src/main/resources/data/realshrooms/worldgen/placed_feature", exist_ok=True)
           os.makedirs("src/main/resources/data/realshrooms/worldgen/biome_modifier", exist_ok=True)
 
-          lang_en = {}
+          lang_en, lang_uk = {}, {"itemGroup.realshrooms.shrooms": "Real Shrooms"}
 
           for sp, color in SPECIES.items():
+              # Текстури
               img = Image.new("RGBA", (16, 16), (0,0,0,0))
               d = ImageDraw.Draw(img)
               d.ellipse([3,2,13,8], fill=color+(255,), outline=(0,0,0,255))
@@ -63,8 +70,9 @@ jobs:
                   if i % 3 == 0: d2.line([(i,0),(i,16)], fill=(255,255,255,180), width=1)
               img2.save(f"src/main/resources/assets/realshrooms/textures/block/{sp}_hypha.png")
               
+              # Використовуємо multipart, щоб гра не крашилась через властивості (вік, сила)
               with open(f"src/main/resources/assets/realshrooms/blockstates/{sp}_shroom.json", "w") as f:
-                  json.dump({"variants": {"": {"model": f"realshrooms:block/{sp}_shroom"}}}, f)
+                  json.dump({"multipart": [{"apply": {"model": f"realshrooms:block/{sp}_shroom"}}]}, f)
               with open(f"src/main/resources/assets/realshrooms/models/block/{sp}_shroom.json", "w") as f:
                   json.dump({"parent": "minecraft:block/cross", "textures": {"cross": f"realshrooms:block/{sp}_shroom"}}, f)
               with open(f"src/main/resources/assets/realshrooms/models/item/{sp}_shroom.json", "w") as f:
@@ -72,7 +80,7 @@ jobs:
               
               for suffix in ["hypha", "node", "core"]:
                   with open(f"src/main/resources/assets/realshrooms/blockstates/{sp}_{suffix}.json", "w") as f:
-                      json.dump({"variants": {"": {"model": f"realshrooms:block/{sp}_hypha"}}}, f)
+                      json.dump({"multipart": [{"apply": {"model": f"realshrooms:block/{sp}_hypha"}}]}, f)
                   with open(f"src/main/resources/assets/realshrooms/models/block/{sp}_{suffix}.json", "w") as f:
                       json.dump({"parent": "minecraft:block/cube_all", "textures": {"all": f"realshrooms:block/{sp}_hypha"}}, f)
                   with open(f"src/main/resources/assets/realshrooms/models/item/{sp}_{suffix}.json", "w") as f:
@@ -81,7 +89,10 @@ jobs:
               lang_en[f"block.realshrooms.{sp}_shroom"] = sp.replace("_", " ").title()
               lang_en[f"block.realshrooms.{sp}_hypha"] = "Mycelium"
               lang_en[f"itemGroup.realshrooms.shrooms"] = "Real Shrooms"
+              lang_uk[f"block.realshrooms.{sp}_shroom"] = UK_NAMES[sp]
+              lang_uk[f"block.realshrooms.{sp}_hypha"] = "Грибниця"
               
+              # Генерація в лісі
               with open(f"src/main/resources/data/realshrooms/worldgen/configured_feature/{sp}_shroom.json", "w") as f:
                   json.dump({"type": "minecraft:random_patch", "config": {"tries": 32, "xz_spread": 5, "y_spread": 3, "feature": {"feature": "minecraft:simple_block", "config": {"to_place": {"type": "minecraft:simple_state_provider", "state": {"Name": f"realshrooms:{sp}_shroom"}}}}}}, f)
               with open(f"src/main/resources/data/realshrooms/worldgen/placed_feature/{sp}_shroom.json", "w") as f:
@@ -89,8 +100,8 @@ jobs:
               with open(f"src/main/resources/data/realshrooms/worldgen/biome_modifier/{sp}_shroom.json", "w") as f:
                   json.dump({"type": "minecraft:add_features", "biomes": "#minecraft:is_forest", "features": f"realshrooms:{sp}_shroom", "step": "vegetal_decoration"}, f)
 
-          with open("src/main/resources/assets/realshrooms/lang/en_us.json", "w") as f:
-              json.dump(lang_en, f, indent=2)
+          with open("src/main/resources/assets/realshrooms/lang/en_us.json", "w") as f: json.dump(lang_en, f, indent=2)
+          with open("src/main/resources/assets/realshrooms/lang/uk_ua.json", "w") as f: json.dump(lang_uk, f, indent=2)
           PYEOF
 
       - name: Setup directories
