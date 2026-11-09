@@ -22,7 +22,7 @@ jobs:
 
       - name: Generate Assets (Textures, Models, Lang, WorldGen)
         run: |
-          cat > gen_assets.py << 'PYEOF'
+          python3 - << 'PYEOF'
           import os, json
           from PIL import Image, ImageDraw
 
@@ -36,7 +36,6 @@ jobs:
               "mycena": (168, 216, 200),
               "honey_fungus": (200, 160, 64),
           }
-          HOSTS = ["dirt", "grass", "podzol", "stone", "deepslate", "sand", "gravel", "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log", "dark_oak_log", "mangrove_log", "cherry_log"]
 
           os.makedirs("src/main/resources/assets/realshrooms/textures/block", exist_ok=True)
           os.makedirs("src/main/resources/assets/realshrooms/textures/item", exist_ok=True)
@@ -48,7 +47,7 @@ jobs:
           os.makedirs("src/main/resources/data/realshrooms/worldgen/placed_feature", exist_ok=True)
           os.makedirs("src/main/resources/data/realshrooms/worldgen/biome_modifier", exist_ok=True)
 
-          lang_en, lang_uk = {}, {}
+          lang_en = {}
 
           for sp, color in SPECIES.items():
               img = Image.new("RGBA", (16, 16), (0,0,0,0))
@@ -90,10 +89,9 @@ jobs:
               with open(f"src/main/resources/data/realshrooms/worldgen/biome_modifier/{sp}_shroom.json", "w") as f:
                   json.dump({"type": "minecraft:add_features", "biomes": "#minecraft:is_forest", "features": f"realshrooms:{sp}_shroom", "step": "vegetal_decoration"}, f)
 
-          with open("src/main/resources/assets/realshrooms/lang/en_us.json", "w") as f: json.dump(lang_en, f, indent=2)
+          with open("src/main/resources/assets/realshrooms/lang/en_us.json", "w") as f:
+              json.dump(lang_en, f, indent=2)
           PYEOF
-          sed -i 's/^          //' gen_assets.py
-          python gen_assets.py
 
       - name: Setup directories
         run: |
